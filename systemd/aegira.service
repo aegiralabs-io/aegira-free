@@ -1,0 +1,14 @@
+[Unit]
+Description=Aegira Automated Recovery Engine
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/aegira
+ExecStart=/usr/local/bin/aegira
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
