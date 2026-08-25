@@ -1,4 +1,3 @@
-```rust
 use serde::Deserialize;
 use std::fs::{self,File,OpenOptions};
 use std::io::{BufRead,BufReader,Seek,SeekFrom,Write};
@@ -561,5 +560,5 @@ fn main(){
         sleep(Duration::from_secs(POLL_INTERVAL_SECS));
     }
 }
-```
+
 
