@@ -1,3 +1,4 @@
+```rust
 use serde::Deserialize;
 use std::fs::{self,File,OpenOptions};
 use std::io::{BufRead,BufReader,Seek,SeekFrom,Write};
@@ -81,7 +82,10 @@ fn load_rules_from_file(path:&str)->Vec<Rule>{
     let contents=match fs::read_to_string(path){
         Ok(contents)=>contents,
         Err(e)=>{
-            log_incident(&format!("[RULES ERROR] Failed reading {}: {}",path,e));
+            log_incident(&format!(
+                "[RULES ERROR] Failed reading {}: {}",
+                path,e
+            ));
             return Vec::new();
         }
     };
@@ -96,8 +100,64 @@ fn load_rules_from_file(path:&str)->Vec<Rule>{
         }
 
         Err(e)=>{
-            log_incident(&format!("[RULES ERROR] Invalid rules file {}: {}",path,e));
+            log_incident(&format!(
+                "[RULES ERROR] Invalid rules file {}: {}",
+                path,e
+            ));
             Vec::new()
+        }
+    }
+}
+
+fn check_custom_rules(){
+    if !Path::new(CUSTOM_RULES_FILE).exists(){
+        log_incident(
+            "[INFO] Custom rules are available in Aegira Paid"
+        );
+        return;
+    }
+
+    let contents=match fs::read_to_string(CUSTOM_RULES_FILE){
+        Ok(contents)=>contents,
+        Err(e)=>{
+            log_incident(&format!(
+                "[RULES ERROR] Failed checking custom rules: {}",
+                e
+            ));
+            return;
+        }
+    };
+
+    let trimmed=contents.trim();
+
+    if trimmed.is_empty()||trimmed=="[]"{
+        log_incident(
+            "[INFO] Custom rules are available in Aegira Paid"
+        );
+        return;
+    }
+
+    match serde_json::from_str::<Vec<Rule>>(trimmed){
+        Ok(rules)=>{
+            if rules.is_empty(){
+                log_incident(
+                    "[INFO] Custom rules are available in Aegira Paid"
+                );
+            }else{
+                log_incident(
+                    "[UPGRADE REQUIRED] Custom rules detected but are not available in Aegira Free"
+                );
+
+                log_incident(
+                    "[UPGRADE REQUIRED] Upgrade to Aegira Paid to enable custom remediation rules"
+                );
+            }
+        }
+
+        Err(_)=>{
+            log_incident(
+                "[UPGRADE REQUIRED] Custom rule configuration detected but custom rules require Aegira Paid"
+            );
         }
     }
 }
@@ -105,26 +165,17 @@ fn load_rules_from_file(path:&str)->Vec<Rule>{
 fn load_all_rules()->Vec<Rule>{
     log_incident("[RULES] Loading built-in rules...");
 
-    let mut rules=load_rules_from_file(BUILTIN_RULES_FILE);
+    let rules=load_rules_from_file(BUILTIN_RULES_FILE);
 
     log_incident(&format!(
         "[RULES] Built-in rules loaded: {}",
         rules.len()
     ));
 
-    log_incident("[RULES] Loading custom rules...");
-
-    let custom_rules=load_rules_from_file(CUSTOM_RULES_FILE);
+    check_custom_rules();
 
     log_incident(&format!(
-        "[RULES] Custom rules loaded: {}",
-        custom_rules.len()
-    ));
-
-    rules.extend(custom_rules);
-
-    log_incident(&format!(
-        "[RULES] Total rules available: {}",
+        "[RULES] Total active rules: {}",
         rules.len()
     ));
 
@@ -132,7 +183,8 @@ fn load_all_rules()->Vec<Rule>{
 }
 
 fn contains_case_insensitive(text:&str,pattern:&str)->bool{
-    text.to_lowercase().contains(&pattern.to_lowercase())
+    text.to_lowercase()
+        .contains(&pattern.to_lowercase())
 }
 
 fn calculate_match_score(rule:&Rule,incident:&str)->i32{
@@ -217,7 +269,9 @@ fn execute_command(
             }
 
             Ok(None)=>{
-                if start.elapsed()>Duration::from_secs(COMMAND_TIMEOUT_SECS){
+                if start.elapsed()
+                    >Duration::from_secs(COMMAND_TIMEOUT_SECS)
+                {
                     let _=child.kill();
 
                     return Err(format!(
@@ -277,7 +331,9 @@ fn perform_remediation(
     }
 }
 
-fn verify_recovery(verification:&Verification)->bool{
+fn verify_recovery(
+    verification:&Verification
+)->bool{
     match verification{
         Verification::ServiceActive{service}=>{
             log_incident(&format!(
@@ -291,14 +347,19 @@ fn verify_recovery(verification:&Verification)->bool{
                 .output()
             {
                 Ok(output)=>{
-                    let active=output.status.success()
+                    let active=
+                        output.status.success()
                         &&String::from_utf8_lossy(&output.stdout)
-                        .trim()=="active";
+                            .trim()=="active";
 
                     if active{
-                        log_incident("[VERIFY] Service is active");
+                        log_incident(
+                            "[VERIFY] Service is active"
+                        );
                     }else{
-                        log_incident("[VERIFY] Service is NOT active");
+                        log_incident(
+                            "[VERIFY] Service is NOT active"
+                        );
                     }
 
                     active
@@ -331,14 +392,19 @@ fn verify_recovery(verification:&Verification)->bool{
                 .output()
             {
                 Ok(output)=>{
-                    let running=output.status.success()
+                    let running=
+                        output.status.success()
                         &&String::from_utf8_lossy(&output.stdout)
-                        .trim()=="true";
+                            .trim()=="true";
 
                     if running{
-                        log_incident("[VERIFY] Container is running");
+                        log_incident(
+                            "[VERIFY] Container is running"
+                        );
                     }else{
-                        log_incident("[VERIFY] Container is NOT running");
+                        log_incident(
+                            "[VERIFY] Container is NOT running"
+                        );
                     }
 
                     running
@@ -358,8 +424,15 @@ fn verify_recovery(verification:&Verification)->bool{
 }
 
 fn recover_with_rule(rule:&Rule)->Result<(),String>{
-    log_incident(&format!("[MATCH] Rule: {}",rule.name));
-    log_incident(&format!("[MATCH] Rule ID: {}",rule.id));
+    log_incident(&format!(
+        "[MATCH] Rule: {}",
+        rule.name
+    ));
+
+    log_incident(&format!(
+        "[MATCH] Rule ID: {}",
+        rule.id
+    ));
 
     perform_remediation(&rule.remediation)?;
 
@@ -378,10 +451,16 @@ fn recover_with_rule(rule:&Rule)->Result<(),String>{
         sleep(Duration::from_secs(2));
     }
 
-    Err("Remediation executed but health verification failed".to_string())
+    Err(
+        "Remediation executed but health verification failed"
+        .to_string()
+    )
 }
 
-fn process_incident(rules:&[Rule],incident:&str){
+fn process_incident(
+    rules:&[Rule],
+    incident:&str
+){
     let start=Instant::now();
 
     log_incident(&format!(
@@ -389,15 +468,27 @@ fn process_incident(rules:&[Rule],incident:&str){
         incident
     ));
 
-    log_incident("================ INCIDENT ================");
+    log_incident(
+        "================ INCIDENT ================"
+    );
+
     log_incident(incident);
 
-    let (rule,score)=match find_best_rule(rules,incident){
+    let (rule,score)=match find_best_rule(
+        rules,
+        incident
+    ){
         Some(result)=>result,
 
         None=>{
-            log_incident("[MATCH] No known remediation rule found");
-            log_incident("[MANUAL ACTION] Unknown incident requires investigation");
+            log_incident(
+                "[MATCH] No known remediation rule found"
+            );
+
+            log_incident(
+                "[MANUAL ACTION] Unknown incident requires investigation"
+            );
+
             return;
         }
     };
@@ -430,13 +521,20 @@ fn process_incident(rules:&[Rule],incident:&str){
 }
 
 fn main(){
-    log_incident("[INFO] Aegira Free Recovery Engine Started");
-    log_incident("[INFO] Mode: FREE");
+    log_incident(
+        "[INFO] Aegira Free Recovery Engine Started"
+    );
+
+    log_incident(
+        "[INFO] Mode: FREE"
+    );
 
     let rules=load_all_rules();
 
     if rules.is_empty(){
-        log_incident("[WARNING] No remediation rules loaded");
+        log_incident(
+            "[WARNING] No remediation rules loaded"
+        );
     }else{
         log_incident(&format!(
             "[INFO] {} remediation rules ready",
@@ -458,7 +556,9 @@ fn main(){
 
     let mut reader=BufReader::new(file);
 
-    let mut position=match reader.seek(SeekFrom::End(0)){
+    let mut position=match reader.seek(
+        SeekFrom::End(0)
+    ){
         Ok(position)=>position,
 
         Err(e)=>{
@@ -470,10 +570,14 @@ fn main(){
         }
     };
 
-    log_incident("[INFO] Monitoring new log entries...");
+    log_incident(
+        "[INFO] Monitoring new log entries..."
+    );
 
     loop{
-        let metadata=match fs::metadata(LOG_FILE_PATH){
+        let metadata=match fs::metadata(
+            LOG_FILE_PATH
+        ){
             Ok(metadata)=>metadata,
 
             Err(e)=>{
@@ -482,7 +586,12 @@ fn main(){
                     e
                 ));
 
-                sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+                sleep(
+                    Duration::from_secs(
+                        POLL_INTERVAL_SECS
+                    )
+                );
+
                 continue;
             }
         };
@@ -490,16 +599,26 @@ fn main(){
         let file_size=metadata.len();
 
         if file_size<position{
-            log_incident("[INFO] Log rotation/truncation detected");
+            log_incident(
+                "[INFO] Log rotation/truncation detected"
+            );
+
             position=0;
         }
 
         if file_size==position{
-            sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+            sleep(
+                Duration::from_secs(
+                    POLL_INTERVAL_SECS
+                )
+            );
+
             continue;
         }
 
-        let file=match File::open(LOG_FILE_PATH){
+        let file=match File::open(
+            LOG_FILE_PATH
+        ){
             Ok(file)=>file,
 
             Err(e)=>{
@@ -508,27 +627,41 @@ fn main(){
                     e
                 ));
 
-                sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+                sleep(
+                    Duration::from_secs(
+                        POLL_INTERVAL_SECS
+                    )
+                );
+
                 continue;
             }
         };
 
         let mut reader=BufReader::new(file);
 
-        if let Err(e)=reader.seek(SeekFrom::Start(position)){
+        if let Err(e)=reader.seek(
+            SeekFrom::Start(position)
+        ){
             log_incident(&format!(
                 "[ERROR] Failed to seek log: {}",
                 e
             ));
 
-            sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+            sleep(
+                Duration::from_secs(
+                    POLL_INTERVAL_SECS
+                )
+            );
+
             continue;
         }
 
         loop{
             let mut line=String::new();
 
-            let bytes_read=match reader.read_line(&mut line){
+            let bytes_read=match reader.read_line(
+                &mut line
+            ){
                 Ok(bytes)=>bytes,
 
                 Err(e)=>{
@@ -536,6 +669,7 @@ fn main(){
                         "[ERROR] Failed reading log: {}",
                         e
                     ));
+
                     break;
                 }
             };
@@ -554,11 +688,17 @@ fn main(){
                 continue;
             }
 
-            process_incident(&rules,trimmed);
+            process_incident(
+                &rules,
+                trimmed
+            );
         }
 
-        sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+        sleep(
+            Duration::from_secs(
+                POLL_INTERVAL_SECS
+            )
+        );
     }
 }
-
-
+```
