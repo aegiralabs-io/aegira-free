@@ -1,8 +1,7 @@
 use serde::Deserialize;
-use std::env;
 use std::fs::{self,File,OpenOptions};
 use std::io::{BufRead,BufReader,Seek,SeekFrom,Write};
-use std::path::{Path,PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration,Instant};
@@ -12,56 +11,69 @@ const COMMAND_TIMEOUT_SECS:u64=20;
 const MIN_MATCH_SCORE:i32=60;
 const SELF_SERVICE:&str="aegira.service";
 
-fn get_aegira_dir()->PathBuf{
-    let home=env::var("HOME")
-        .unwrap_or_else(|_|".".to_string());
+const LOGS_DIR:&str="/var/log/aegira";
+const LOG_FILE_PATH:&str="/var/log/aegira/system.log";
+const INCIDENT_LOG_PATH:&str="/var/log/aegira/incident.log";
 
-    PathBuf::from(home).join("aegira")
+const BUILTIN_RULES_DIR:&str="/etc/aegira/rules/builtin";
+const CUSTOM_RULES_DIR:&str="/etc/aegira/rules/custom";
+
+/* ============================================================
+   ENVIRONMENT SETUP
+============================================================ */
+
+fn ensure_environment_setup()->Result<(),String>{
+    fs::create_dir_all(LOGS_DIR)
+        .map_err(|e|format!("Failed to create {}: {}",LOGS_DIR,e))?;
+
+    fs::create_dir_all(BUILTIN_RULES_DIR)
+        .map_err(|e|format!("Failed to create {}: {}",BUILTIN_RULES_DIR,e))?;
+
+    fs::create_dir_all(CUSTOM_RULES_DIR)
+        .map_err(|e|format!("Failed to create {}: {}",CUSTOM_RULES_DIR,e))?;
+
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_FILE_PATH)
+        .map_err(|e|format!(
+            "Failed to create monitored log {}: {}",
+            LOG_FILE_PATH,
+            e
+        ))?;
+
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(INCIDENT_LOG_PATH)
+        .map_err(|e|format!(
+            "Failed to create incident log {}: {}",
+            INCIDENT_LOG_PATH,
+            e
+        ))?;
+
+    Ok(())
 }
 
-fn get_log_file_path()->PathBuf{
-    get_aegira_dir()
-        .join("logs")
-        .join("system.log")
-}
-
-fn get_incident_log_path()->PathBuf{
-    get_aegira_dir()
-        .join("logs")
-        .join("incident.log")
-}
-
-fn get_builtin_rules_file()->PathBuf{
-    get_aegira_dir()
-        .join("rules")
-        .join("builtin")
-        .join("rules.json")
-}
-
-fn get_custom_rules_file()->PathBuf{
-    get_aegira_dir()
-        .join("rules")
-        .join("custom")
-        .join("rules.json")
-}
+/* ============================================================
+   LOGGING
+============================================================ */
 
 fn log_incident(msg:&str){
     println!("{}",msg);
 
-    let incident_log_path=get_incident_log_path();
-
-    if let Some(parent)=incident_log_path.parent(){
-        let _=fs::create_dir_all(parent);
-    }
-
     if let Ok(mut file)=OpenOptions::new()
         .create(true)
         .append(true)
-        .open(incident_log_path)
+        .open(INCIDENT_LOG_PATH)
     {
         let _=writeln!(file,"{}",msg);
     }
 }
+
+/* ============================================================
+   RULE STRUCTURES
+============================================================ */
 
 #[derive(Debug,Deserialize,Clone)]
 struct Rule{
@@ -105,67 +117,123 @@ enum Verification{
     ContainerRunning{container:String},
 }
 
-fn load_rules_from_file(path:&Path)->Vec<Rule>{
-    if !path.exists(){
-        log_incident(&format!(
-            "[RULES] File does not exist: {}",
-            path.display()
-        ));
+/* ============================================================
+   DEFAULT FALLBACK RULES
+============================================================ */
 
-        return Vec::new();
+fn get_hardcoded_default_rules()->Vec<Rule>{
+    vec![
+        Rule{
+            id:"connection_refused".to_string(),
+            name:"Connection Refused".to_string(),
+            severity:"high".to_string(),
+            error_patterns:vec![
+                "connection refused".to_string()
+            ],
+            context_patterns:Vec::new(),
+            remediation:Remediation::ServiceRestart{
+                service:"cron".to_string()
+            },
+            verification:Verification::ServiceActive{
+                service:"cron".to_string()
+            },
+            priority:10
+        }
+    ]
+}
+
+/* ============================================================
+   RULE LOADING
+============================================================ */
+
+fn parse_rules(contents:&str)->Result<Vec<Rule>,String>{
+    let trimmed=contents.trim();
+
+    if trimmed.is_empty(){
+        return Ok(Vec::new());
     }
 
-    let contents=match fs::read_to_string(path){
-        Ok(contents)=>contents,
-
-        Err(e)=>{
-            log_incident(&format!(
-                "[RULES ERROR] Failed reading {}: {}",
-                path.display(),
-                e
-            ));
-
-            return Vec::new();
-        }
-    };
-
-    match serde_json::from_str::<Vec<Rule>>(&contents){
-        Ok(rules)=>{
-            for rule in &rules{
-                log_incident(&format!(
-                    "[RULES] Loaded: {}",
-                    rule.id
-                ));
-            }
-
-            rules
-        }
-
-        Err(e)=>{
-            log_incident(&format!(
-                "[RULES ERROR] Invalid rules file {}: {}",
-                path.display(),
-                e
-            ));
-
-            Vec::new()
-        }
+    if trimmed.starts_with('['){
+        serde_json::from_str::<Vec<Rule>>(trimmed)
+            .map_err(|e|e.to_string())
+    }else{
+        serde_json::from_str::<Rule>(trimmed)
+            .map(|rule|vec![rule])
+            .map_err(|e|e.to_string())
     }
 }
 
-fn check_custom_rules(){
-    let custom_rules_file=get_custom_rules_file();
+fn load_rules_from_directory(path:&Path)->Vec<Rule>{
+    let mut rules=Vec::new();
 
-    if !custom_rules_file.exists(){
-        log_incident(
-            "[INFO] Custom rules are available in Aegira Paid"
-        );
+    let entries=match fs::read_dir(path){
+        Ok(entries)=>entries,
 
-        return;
+        Err(e)=>{
+            log_incident(&format!(
+                "[RULES ERROR] Failed to read {}: {}",
+                path.display(),
+                e
+            ));
+
+            return rules;
+        }
+    };
+
+    for entry in entries.flatten(){
+        let file_path=entry.path();
+
+        if file_path.extension()
+            .and_then(|x|x.to_str())
+            !=Some("json")
+        {
+            continue;
+        }
+
+        let contents=match fs::read_to_string(&file_path){
+            Ok(contents)=>contents,
+
+            Err(e)=>{
+                log_incident(&format!(
+                    "[RULES ERROR] Failed reading {}: {}",
+                    file_path.display(),
+                    e
+                ));
+
+                continue;
+            }
+        };
+
+        match parse_rules(&contents){
+            Ok(loaded_rules)=>{
+                for rule in loaded_rules{
+                    log_incident(&format!(
+                        "[RULES] Loaded: {}",
+                        rule.id
+                    ));
+
+                    rules.push(rule);
+                }
+            }
+
+            Err(e)=>{
+                log_incident(&format!(
+                    "[RULES ERROR] Invalid rule file {}: {}",
+                    file_path.display(),
+                    e
+                ));
+            }
+        }
     }
 
-    let contents=match fs::read_to_string(&custom_rules_file){
-        Ok(contents)=>contents,
+    rules
+}
+
+fn check_custom_rules(){
+    let path=Path::new(CUSTOM_RULES_DIR);
+
+    let entries=match fs::read_dir(path){
+        Ok(entries)=>entries,
 
         Err(e)=>{
             log_incident(&format!(
@@ -177,37 +245,22 @@ fn check_custom_rules(){
         }
     };
 
-    let trimmed=contents.trim();
+    for entry in entries.flatten(){
+        let file_path=entry.path();
 
-    if trimmed.is_empty()||trimmed=="[]"{
-        log_incident(
-            "[INFO] Custom rules are available in Aegira Paid"
-        );
-
-        return;
-    }
-
-    match serde_json::from_str::<Vec<Rule>>(trimmed){
-        Ok(rules)=>{
-            if rules.is_empty(){
-                log_incident(
-                    "[INFO] Custom rules are available in Aegira Paid"
-                );
-            }else{
-                log_incident(
-                    "[UPGRADE REQUIRED] Custom rules detected but are not available in Aegira Free"
-                );
-
-                log_incident(
-                    "[UPGRADE REQUIRED] Upgrade to Aegira Paid to enable custom remediation rules"
-                );
-            }
-        }
-
-        Err(_)=>{
+        if file_path.extension()
+            .and_then(|x|x.to_str())
+            ==Some("json")
+        {
             log_incident(
-                "[UPGRADE REQUIRED] Custom rule configuration detected but custom rules require Aegira Paid"
+                "[UPGRADE REQUIRED] Custom rules detected but are not available in Aegira Free"
             );
+
+            log_incident(
+                "[UPGRADE REQUIRED] Upgrade to Aegira Paid to enable custom remediation rules"
+            );
+
+            return;
         }
     }
 }
@@ -215,11 +268,24 @@ fn check_custom_rules(){
 fn load_all_rules()->Vec<Rule>{
     log_incident("[RULES] Loading built-in rules...");
 
-    let builtin_rules_file=get_builtin_rules_file();
-
-    let rules=load_rules_from_file(
-        &builtin_rules_file
+    let mut rules=load_rules_from_directory(
+        Path::new(BUILTIN_RULES_DIR)
     );
+
+    if rules.is_empty(){
+        log_incident(
+            "[RULES] No JSON rules found. Loading built-in fallback rule."
+        );
+
+        rules=get_hardcoded_default_rules();
+
+        for rule in &rules{
+            log_incident(&format!(
+                "[RULES] Loaded fallback: {}",
+                rule.id
+            ));
+        }
+    }
 
     log_incident(&format!(
         "[RULES] Built-in rules loaded: {}",
@@ -235,6 +301,10 @@ fn load_all_rules()->Vec<Rule>{
 
     rules
 }
+
+/* ============================================================
+   MATCHING ENGINE
+============================================================ */
 
 fn contains_case_insensitive(
     text:&str,
@@ -299,6 +369,28 @@ fn find_best_rule<'a>(
     )
 }
 
+/* ============================================================
+   COMMAND EXECUTION
+============================================================ */
+
+fn get_systemctl_path()->&'static str{
+    if Path::new("/bin/systemctl").exists(){
+        "/bin/systemctl"
+    }else{
+        "/usr/bin/systemctl"
+    }
+}
+
+fn get_docker_path()->&'static str{
+    if Path::new("/usr/bin/docker").exists(){
+        "/usr/bin/docker"
+    }else if Path::new("/bin/docker").exists(){
+        "/bin/docker"
+    }else{
+        "docker"
+    }
+}
+
 fn execute_command(
     executable:&str,
     args:&[&str]
@@ -309,28 +401,8 @@ fn execute_command(
         args.join(" ")
     ));
 
-    let (program,program_args):(
-        &str,
-        Vec<&str>
-    )=if executable=="systemctl"{
-        let mut sudo_args=
-            Vec::with_capacity(
-                args.len()+1
-            );
-
-        sudo_args.push("/bin/systemctl");
-
-        sudo_args.extend_from_slice(
-            args
-        );
-
-        ("sudo",sudo_args)
-    }else{
-        (executable,args.to_vec())
-    };
-
-    let mut child=Command::new(program)
-        .args(&program_args)
+    let mut child=Command::new(executable)
+        .args(args)
         .spawn()
         .map_err(|e|format!(
             "Failed to start {}: {}",
@@ -385,6 +457,10 @@ fn execute_command(
     }
 }
 
+/* ============================================================
+   REMEDIATION
+============================================================ */
+
 fn perform_remediation(
     remediation:&Remediation
 )->Result<(),String>{
@@ -405,7 +481,7 @@ fn perform_remediation(
             ));
 
             execute_command(
-                "systemctl",
+                get_systemctl_path(),
                 &["restart",service]
             )
         }
@@ -417,12 +493,16 @@ fn perform_remediation(
             ));
 
             execute_command(
-                "docker",
+                get_docker_path(),
                 &["restart",container]
             )
         }
     }
 }
+
+/* ============================================================
+   VERIFICATION
+============================================================ */
 
 fn verify_recovery(
     verification:&Verification
@@ -434,8 +514,7 @@ fn verify_recovery(
                 service
             ));
 
-            match Command::new("sudo")
-                .arg("/bin/systemctl")
+            match Command::new(get_systemctl_path())
                 .args([
                     "is-active",
                     service
@@ -474,15 +553,13 @@ fn verify_recovery(
             }
         }
 
-        Verification::ContainerRunning{
-            container
-        }=>{
+        Verification::ContainerRunning{container}=>{
             log_incident(&format!(
                 "[VERIFY] Checking container: {}",
                 container
             ));
 
-            match Command::new("docker")
+            match Command::new(get_docker_path())
                 .args([
                     "inspect",
                     "-f",
@@ -524,6 +601,10 @@ fn verify_recovery(
         }
     }
 }
+
+/* ============================================================
+   RECOVERY ENGINE
+============================================================ */
 
 fn recover_with_rule(
     rule:&Rule
@@ -568,6 +649,10 @@ fn recover_with_rule(
         .to_string()
     )
 }
+
+/* ============================================================
+   INCIDENT PROCESSING
+============================================================ */
 
 fn process_incident(
     rules:&[Rule],
@@ -632,9 +717,19 @@ fn process_incident(
     }
 }
 
+/* ============================================================
+   MAIN
+============================================================ */
+
 fn main(){
-    let aegira_dir=get_aegira_dir();
-    let log_file_path=get_log_file_path();
+    if let Err(e)=ensure_environment_setup(){
+        eprintln!(
+            "[FATAL] Environment setup failed: {}",
+            e
+        );
+
+        return;
+    }
 
     log_incident(
         "[INFO] Aegira Free Recovery Engine Started"
@@ -645,37 +740,23 @@ fn main(){
     );
 
     log_incident(&format!(
-        "[INFO] Aegira directory: {}",
-        aegira_dir.display()
-    ));
-
-    log_incident(&format!(
         "[INFO] Monitoring log: {}",
-        log_file_path.display()
+        LOG_FILE_PATH
     ));
 
     let rules=load_all_rules();
 
-    if rules.is_empty(){
-        log_incident(
-            "[WARNING] No remediation rules loaded"
-        );
-    }else{
-        log_incident(&format!(
-            "[INFO] {} remediation rules ready",
-            rules.len()
-        ));
-    }
+    log_incident(&format!(
+        "[INFO] {} remediation rules ready",
+        rules.len()
+    ));
 
-    let file=match File::open(
-        &log_file_path
-    ){
+    let file=match File::open(LOG_FILE_PATH){
         Ok(file)=>file,
 
         Err(e)=>{
             log_incident(&format!(
-                "[FATAL] Failed to open monitored log {}: {}",
-                log_file_path.display(),
+                "[FATAL] Failed to open monitored log: {}",
                 e
             ));
 
@@ -705,9 +786,7 @@ fn main(){
     );
 
     loop{
-        let metadata=match fs::metadata(
-            &log_file_path
-        ){
+        let metadata=match fs::metadata(LOG_FILE_PATH){
             Ok(metadata)=>metadata,
 
             Err(e)=>{
@@ -746,9 +825,7 @@ fn main(){
             continue;
         }
 
-        let file=match File::open(
-            &log_file_path
-        ){
+        let file=match File::open(LOG_FILE_PATH){
             Ok(file)=>file,
 
             Err(e)=>{
