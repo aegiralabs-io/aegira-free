@@ -6,7 +6,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path,PathBuf};
 use std::process::Command;
 use std::thread::sleep;
-use std::time::{Duration,Instant,SystemTime};
+use std::time::{Duration,Instant};
 
 const LOGS_DIR:&str="/var/log/aegira";
 const LOG_FILE_PATH:&str="/var/log/aegira/system.log";
@@ -329,7 +329,6 @@ fn load_rules_from_directory(path:&Path)->RuleLoadResult{
             ));
 
             result.parse_errors+=1;
-
             return result;
         }
     };
@@ -569,7 +568,7 @@ fn calculate_match_score(
     rule:&Rule,
     incident:&str
 )->Option<i32>{
-    let mut error_matches=0;
+    let mut error_matches:usize=0;
     let mut context_matches=0;
 
     for pattern in &rule.error_patterns{
@@ -641,9 +640,9 @@ fn find_best_rule<'a>(
    BINARY RESOLUTION
 ============================================================ */
 
-fn find_binary(
-    candidates:&[&str]
-)->Result<&str,String>{
+fn find_binary<'a>(
+    candidates:&'a [&'a str]
+)->Result<&'a str,String>{
     for candidate in candidates{
         if Path::new(candidate).exists(){
             return Ok(candidate);
@@ -1218,6 +1217,7 @@ fn main(){
     };
 
     let mut partial_line=String::new();
+
     let mut cooldowns:HashMap<String,Instant>=
         HashMap::new();
 
