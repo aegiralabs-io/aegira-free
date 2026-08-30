@@ -431,71 +431,37 @@ fn merge_rules(
 }
 
 fn load_all_rules() -> Vec<Rule> {
-    log_incident("[RULES] Loading built-in rules...");
-
     let mut rules = Vec::new();
-    let mut seen_ids = HashSet::new();
 
-    let mut total_json_files = 0usize;
-    let mut total_errors = 0usize;
-
-    let mut sources: Vec<PathBuf> = Vec::new();
-
-    if let Some(project_dir) = project_builtin_rules_dir() {
-        sources.push(project_dir);
+    // 1. Built-in rules
+    let builtin_dir = std::path::Path::new("/etc/aegira/rules/builtin");
+    if builtin_dir.exists() {
+        let mut builtin = load_rules_from_directory(builtin_dir);
+        rules.append(&mut builtin.rules);
     }
 
-    sources.push(PathBuf::from(SYSTEM_BUILTIN_RULES_DIR));
-
-    for source in sources {
-        let result = load_rules_from_directory(&source);
-
-        total_json_files += result.json_files_found;
-        total_errors += result.parse_errors;
-
-        merge_rules(
-            &mut rules,
-            &mut seen_ids,
-            result.rules,
-            &source,
-        );
+    // 2. Local custom rules
+    let custom_dir = std::path::Path::new("./rules/custom");
+    if custom_dir.exists() {
+        let mut custom = load_rules_from_directory(custom_dir);
+        rules.append(&mut custom.rules);
     }
 
-    if total_json_files == 0 {
-        log_incident(
-            "[RULES] No built-in JSON rules found. Loading bootstrap fallback rule."
-        );
-
-        for rule in get_hardcoded_default_rules() {
-            seen_ids.insert(
-                rule.id.trim().to_lowercase()
-            );
-
-            log_incident(&format!(
-                "[RULES] Loaded fallback: {}",
-                rule.id
-            ));
-
-            rules.push(rule);
-        }
-    } else if rules.is_empty() && total_errors > 0 {
-        log_incident(
-            "[RULES ERROR] Built-in rule files exist but none are valid."
-        );
-    }
-
-    if let Some(custom_dir) = project_custom_rules_dir() {
-        if custom_dir.exists() {
-            let mut custom = load_rules_from_directory(&custom_dir);
-            rules.append(&mut custom.rules);
-        }
-    }
-
+    // 3. System custom rules
     let system_custom = std::path::Path::new("/etc/aegira/rules/custom");
     if system_custom.exists() {
         let mut custom = load_rules_from_directory(system_custom);
         rules.append(&mut custom.rules);
     }
+
+    // Hardcoded fallback if no rules loaded
+    if rules.is_empty() {
+        rules = get_hardcoded_default_rules();
+    }
+
+    rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+    rules
+}
 
 fn contains_case_insensitive(
     text: &str,
