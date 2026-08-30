@@ -491,24 +491,11 @@ fn load_all_rules() -> Vec<Rule> {
         }
     }
 
+    let system_custom = std::path::Path::new("/etc/aegira/rules/custom");
     if system_custom.exists() {
         let mut custom = load_rules_from_directory(system_custom);
         rules.append(&mut custom.rules);
     }
-
-    rules.sort_by(|a, b| {
-        a.id
-            .to_lowercase()
-            .cmp(&b.id.to_lowercase())
-    });
-
-    log_incident(&format!(
-        "[RULES] Active built-in rules: {}",
-        rules.len()
-    ));
-
-    rules
-}
 
 fn contains_case_insensitive(
     text: &str,
