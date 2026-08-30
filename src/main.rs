@@ -486,26 +486,14 @@ fn load_all_rules() -> Vec<Rule> {
 
     if let Some(custom_dir) = project_custom_rules_dir() {
         if custom_dir.exists() {
-            let custom = load_rules_from_directory(&custom_dir);
-
-            if custom.json_files_found > 0 {
-                log_incident(
-                    "[UPGRADE REQUIRED] Custom rules are not available in Aegira Free."
-                );
-            }
+            let mut custom = load_rules_from_directory(&custom_dir);
+            rules.append(&mut custom.rules);
         }
     }
 
-    let system_custom = Path::new(SYSTEM_CUSTOM_RULES_DIR);
-
     if system_custom.exists() {
-        let custom = load_rules_from_directory(system_custom);
-
-        if custom.json_files_found > 0 {
-            log_incident(
-                "[UPGRADE REQUIRED] Custom rules are not available in Aegira Free."
-            );
-        }
+        let mut custom = load_rules_from_directory(system_custom);
+        rules.append(&mut custom.rules);
     }
 
     rules.sort_by(|a, b| {
